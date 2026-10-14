@@ -1,3 +1,12 @@
+
 python-service/venv/
+python-service/.venv/
 python-service/__pycache__/
 *.py[cod]
+
+# Temporary repository clones
+/python-service/cloned_test_repo/
+/python-service/cloned_dev_test_*/
+
+# Python generated files
+__pycache__/
