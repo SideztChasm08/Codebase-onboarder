@@ -85,9 +85,51 @@ def chunk_file(file_path, repo_root=None):
          stored_path = file_path.as_posix()
     chunks = []
 
-    def visit(node, class_stack=None):
-        if class_stack is None:
-            class_stack = []
+    # Keep each executable module-level statement separate. Slicing from the
+    # first through last statement could accidentally include declarations in
+    # between them.
+    module_statements = [
+        child for child in tree.root_node.named_children
+        if child.type not in {
+            "comment", "import_statement", "import_from_statement",
+            "future_import_statement",
+            "function_definition", "class_definition", "decorated_definition",
+        }
+    ]
+    for statement in module_statements:
+        start_line = statement.start_point[0] + 1
+        end_line = statement.end_point[0] + 1
+        statement_comments = extract_comments(statement)
+        statement_comments.extend([
+            child.text.decode("utf-8")
+            for child in tree.root_node.named_children
+            if child.type == "comment"
+            and start_line <= child.start_point[0] + 1 <= end_line
+        ])
+        chunks.append({
+            "file": stored_path,
+            "type": "module",
+            "name": "<module>",
+            "qualified_name": f"<module>.statement@{statement.start_byte}",
+            "start_line": start_line,
+            "end_line": end_line,
+            "containing_class": None,
+            "docstring": None,
+            "imports": imports,
+            "comments": list(dict.fromkeys(statement_comments)),
+            "source": source_bytes[statement.start_byte:statement.end_byte].decode("utf-8"),
+        })
+
+    def visit(node, lexical_scope=None, class_stack=None, source_node=None):
+        lexical_scope = lexical_scope or []
+        class_stack = class_stack or []
+        if node.type == "decorated_definition":
+            for child in node.children:
+                if child.type in ("function_definition", "class_definition"):
+                    visit(child, lexical_scope, class_stack, node)
+                else:
+                    visit(child, lexical_scope, class_stack)
+            return
 
         if node.type in ("class_definition", "function_definition"):
             name = get_node_name(node)
@@ -99,15 +141,18 @@ def chunk_file(file_path, repo_root=None):
                     else "function"
                 )
 
-                start_line = node.start_point[0] + 1
-                end_line = node.end_point[0] + 1
+                span_node = source_node or node
+                start_line = span_node.start_point[0] + 1
+                end_line = span_node.end_point[0] + 1
+                qualified_name = ".".join([*lexical_scope, name])
 
-                key = (chunk_type, name, start_line)
+                key = (chunk_type, name, node.start_point[0] + 1)
 
                 chunks.append({
                     "file": stored_path,
                     "type": chunk_type,
                     "name": name,
+                    "qualified_name": qualified_name,
                     "start_line": start_line,
                     "end_line": end_line,
                     "containing_class": (
@@ -115,15 +160,16 @@ def chunk_file(file_path, repo_root=None):
                     ),
                     "docstring": docstrings.get(key),
                     "imports": imports,
-                    "comments": extract_comments(node),
-                    "source": node.text.decode("utf-8"),
+                    "comments": extract_comments(span_node),
+                    "source": span_node.text.decode("utf-8"),
                 })
 
+                lexical_scope = [*lexical_scope, name]
                 if chunk_type == "class":
-                    class_stack = class_stack + [name]
+                    class_stack = [*class_stack, name]
 
         for child in node.children:
-            visit(child, class_stack)
+            visit(child, lexical_scope, class_stack)
 
-    visit(tree.root_node)
+    visit(tree.root_node, [], [])
     return chunks

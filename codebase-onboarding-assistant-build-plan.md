@@ -3,7 +3,7 @@
 **Companion to:** `codebase-onboarding-assistant-spec.md`
 **Scope decision:** Supports Python repositories only for v1. This simplifies chunking and symbol-graph construction — no need for multiple tree-sitter grammars or cross-language handling.
 
-**Model decision:** Uses free, open-source models throughout — no paid API calls. LLM synthesis runs locally via Ollama (e.g., Qwen2.5-Coder or Llama 3.1 8B); embeddings run locally via `sentence-transformers` (e.g., `nomic-embed-text` or `bge-small-en`).
+**Model decision:** Uses local models and no paid API calls. LLM synthesis is planned via Ollama. The initial embedding baseline is `sentence-transformers` with `BAAI/bge-small-en-v1.5` (384 dimensions); it is a compact English retrieval model, not code-specialized, so evaluate it on code questions before treating it as final.
 
 ---
 
@@ -61,3 +61,10 @@ Use the same Python repo chosen in Step 2. Prepare 2–3 demo questions from the
 
 - **Specific model choice:** confirm Qwen2.5-Coder vs. Llama 3.1 8B (or another open-weight model) based on available hardware
 - **Test repo for demos:** pick a real, mid-size open-source Python project (e.g., a Flask app, a mid-size Django project) — needs enough complexity to make "how does auth work" and "where is X used" genuinely interesting questions
+
+## TICKET-204 implementation notes
+
+- PostgreSQL/pgvector reuses the repository's existing Compose database. The standalone Python service owns schema setup via `python-service/schema/001_vector_index.sql` and `initialize_db.py`; it does not integrate Spring Boot or a message queue in this ticket.
+- `chunk_schema.py` defines chunk schema version 1 and deterministic content IDs from full lexical symbol names. Existing class/method overlap is retained; each top-level executable statement gets a separate module chunk.
+- Chunks are unique by repository, revision, and chunk ID. Indexing writes a complete revision transactionally and changes the active revision only at commit. Similarity search is exact cosine distance and filters to the active revision for the requested repository. No approximate vector index is added yet.
+- Model and database setup, environment variables, CLI examples, and tests are documented in `python-service/README.md`. The 384-dimensional schema requires a deliberate migration before selecting a different embedding dimension.
