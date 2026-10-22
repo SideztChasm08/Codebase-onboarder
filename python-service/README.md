@@ -1,6 +1,6 @@
 # Python indexing service
 
-This folder contains the standalone Python ingestion, indexing, and code-intelligence core. It remains independent of FastAPI and Spring Boot; those API/service integrations are a later milestone.
+This folder contains the Python ingestion, indexing, and code-intelligence service. The FastAPI layer wraps the same standalone modules; Spring Boot and messaging remain outside this milestone.
 
 ## Chunk contract and indexing behavior
 
@@ -64,7 +64,7 @@ python graph_cli.py query --repo-id demo-repo --revision "<git-commit-sha>" --gr
 python graph_cli.py query --repo-id demo-repo --revision "<git-commit-sha>" --graph "graphs\demo-repo-<git-commit-sha>.json" --question "Where is validate_token called?"
 ```
 
-`query_classifier.classify_query()` deterministically returns `conceptual`, `structural`, or `ambiguous`, plus `semantic`, `structural`, or both routes. `structural_query.answer_structural_query()` returns structured evidence with file and line locations; ambiguous names return candidates, and missing names produce no fabricated evidence. Conceptual retrieval and LLM phrasing are not implemented yet: questions routed to semantic retrieval are explicitly marked `semantic_required`, and combined questions include structural evidence while indicating both routes for the future hybrid handler.
+`query_classifier.classify_query()` deterministically returns `conceptual`, `structural`, or `ambiguous`, plus `semantic`, `structural`, or both routes. `structural_query.answer_structural_query()` returns structured evidence with file and line locations; ambiguous names return candidates, and missing names produce no fabricated evidence. `answering.py` combines classifier routing with active-revision semantic search and graph lookup. Structural queries do not use vector search to identify definitions or references.
 
 ## Tests
 
@@ -72,4 +72,33 @@ python graph_cli.py query --repo-id demo-repo --revision "<git-commit-sha>" --gr
 python -m pytest -q tests
 ```
 
-The focused ticket tests are under `tests/`. The two PostgreSQL integration cases use a real database only when `PGVECTOR_TEST_DATABASE_URL` points to a disposable pgvector database. They are skipped otherwise. Use a separate, empty test database because the integration tests initialize a 3-dimensional schema; each test removes only its uniquely named test rows. The older root-level `test_*.py` files are standalone scripts, not part of this pytest suite.
+The focused ticket tests are under `tests/`, including fake-client synthesis and FastAPI request/response coverage. The two PostgreSQL integration cases use a real database only when `PGVECTOR_TEST_DATABASE_URL` points to a disposable pgvector database. They are skipped otherwise. Use a separate, empty test database because the integration tests initialize a 3-dimensional schema; each test removes only its uniquely named test rows. The older root-level `test_*.py` files are standalone scripts, not part of this pytest suite.
+
+## Local synthesis and HTTP API (TICKET-207/209)
+
+Conceptual questions retrieve top-k chunks from the active vector revision and pass only retrieved evidence to an injectable chat client. The default adapter calls Ollama's local `/api/chat` endpoint. Structural questions use the AST symbol graph directly; combined questions send semantic and structural evidence to synthesis. Every response includes structured citations with `repository_id`, `revision`, `file_path`, `start_line`, `end_line`, and `source_type`; locations come from chunk metadata or graph evidence. With no evidence, the service returns `insufficient_evidence` without calling the model. Model failures surface as API 503.
+
+Install Ollama separately, pull the default model, and start its local service:
+
+```powershell
+ollama pull qwen2.5-coder:7b
+ollama serve
+```
+
+Set `OLLAMA_BASE_URL` (default `http://localhost:11434`), `OLLAMA_MODEL` (default `qwen2.5-coder:7b`), and `OLLAMA_TIMEOUT_SECONDS` (default `120`). Ollama and model downloads are not needed by automated tests, which inject a fake client. Real LLM synthesis was not exercised as part of the automated suite; manually query the API after Ollama is running to verify local model setup.
+
+After the database setup above, run from `python-service`:
+
+```powershell
+python -m uvicorn main:app --host 127.0.0.1 --port 8000
+```
+
+Index a local checkout (use an immutable commit SHA as revision), then query it:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/index -ContentType 'application/json' -Body '{"repo_id":"demo-repo","repo_path":"C:\\path\\to\\repo","revision":"<git-commit-sha>"}'
+Invoke-RestMethod http://127.0.0.1:8000/status/demo-repo
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/query -ContentType 'application/json' -Body '{"repo_id":"demo-repo","question":"How does authentication work?","limit":5}'
+```
+
+`POST /index` takes `repo_id`, local `repo_path`, and `revision`; `GET /status/{repo_id}` reports `indexing`, `ready`, or `failed`; `POST /query` takes `repo_id`, `question`, optional active `revision`, and `limit` (1–20). `GET /health` is also available. API status and graph snapshots are process-local and are lost on restart; re-index to restore them. This milestone intentionally has no authentication and accepts local paths, so run it only in a trusted local environment. It does not clone remote URLs or add Spring Boot/messaging infrastructure.

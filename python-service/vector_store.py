@@ -129,7 +129,7 @@ class PgVectorStore:
                            SELECT active_revision, embedding_model
                            FROM repository_indexes WHERE repo_id = %s
                        )
-                       SELECT c.chunk_id, c.file_path, c.chunk_type, c.symbol_name,
+                       SELECT c.chunk_id, c.revision, c.file_path, c.chunk_type, c.symbol_name,
                               c.qualified_name, c.start_line, c.end_line, c.source,
                               c.metadata, c.embedding_model,
                               (c.embedding <=> %s) AS distance
